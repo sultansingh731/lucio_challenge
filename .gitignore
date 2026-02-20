@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+./data/pdfs/
+
+# architure file remove
+DOCUMENTATION.md
+ARCHITECTURE_AND_TECH_FLOW.md
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# Rust
+rust-core/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# Data
+data/
+*.pdf
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Model weights (download separately)
+models/
+*.bin
+*.safetensors

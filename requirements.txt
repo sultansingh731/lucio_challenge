@@ -1,0 +1,31 @@
+# Lucio Server - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core ML/GPU libraries
+torch>=2.0.0
+numpy>=1.24.0
+transformers>=4.35.0
+
+# FAISS for vector search (use faiss-gpu for GPU support)
+faiss-cpu>=1.7.4  # Use faiss-gpu on systems with CUDA
+
+# Groq API client
+groq>=0.4.0
+
+# OCR (optional - for scanned documents)
+# surya-ocr>=0.4.0  # Uncomment if you need OCR support
+
+# PDF processing fallback (if Rust module not available)
+PyPDF2>=3.0.0
+
+# Async utilities
+aiohttp>=3.9.0
+aiofiles>=23.0.0
+
+# Utilities
+tqdm>=4.66.0
+python-dotenv>=1.0.0
+
+# Development
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
