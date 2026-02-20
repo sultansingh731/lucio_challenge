@@ -34,29 +34,44 @@ class GPUResourceManager:
     """Manages GPU resources and ensures optimal utilization"""
     
     def __init__(self):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.is_cuda = torch.cuda.is_available()
-        
-        if self.is_cuda:
-            # Get GPU properties
+        # Detect GPU: CUDA > MPS > CPU
+        if torch.cuda.is_available():
+            self.device = "cuda"
+            self.is_gpu = True
             self.gpu_name = torch.cuda.get_device_name(0)
             self.gpu_memory = torch.cuda.get_device_properties(0).total_memory
-            print(f"🚀 GPU Detected: {self.gpu_name}")
+            print(f"🚀 GPU Detected (NVIDIA CUDA): {self.gpu_name}")
             print(f"📊 GPU Memory: {self.gpu_memory / 1e9:.2f} GB")
+        elif torch.backends.mps.is_available():
+            self.device = "mps"
+            self.is_gpu = True
+            self.gpu_name = "Apple Metal (MPS)"
+            # MPS doesn't expose memory, estimate for M series
+            self.gpu_memory = 16e9  # Assume 16GB shared memory
+            print(f"🚀 GPU Detected: {self.gpu_name}")
+            print(f"📊 Using shared GPU memory (estimated)")
         else:
-            print("⚠️ No GPU detected, falling back to CPU")
+            self.device = "cpu"
+            self.is_gpu = False
             self.gpu_name = "CPU"
             self.gpu_memory = 0
+            print("⚠️ No GPU detected, using CPU (slower)")
     
     def optimize_batch_size(self, model_memory_mb: int = 2000) -> int:
         """Calculate optimal batch size based on available GPU memory"""
-        if not self.is_cuda:
+        if not self.is_gpu:
             return 32
         
-        available_memory = self.gpu_memory - (model_memory_mb * 1e6)
-        # Estimate ~10MB per batch item for embeddings
-        batch_size = int(available_memory / (10 * 1e6))
-        return min(max(batch_size, 32), 256)
+        if self.device == "cuda":
+            available_memory = self.gpu_memory - (model_memory_mb * 1e6)
+            # Estimate ~10MB per batch item for embeddings
+            batch_size = int(available_memory / (10 * 1e6))
+            return min(max(batch_size, 32), 512)
+        elif self.device == "mps":
+            # Apple Metal: conservative batch size
+            return 256
+        
+        return 32
 
 
 class OCRProcessor:
@@ -141,10 +156,39 @@ class EmbeddingModel:
     
     # Use smaller, faster model: all-MiniLM-L6-v2 (80MB vs 2.3GB for BGE-M3)
     # Still good quality but 30x smaller and faster to download/load
-    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2", device: str = "cuda", batch_size: int = 128):
+    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2", device: str = None, batch_size: int = None):
         self.model_name = model_name
-        self.device = device if torch.cuda.is_available() else "cpu"
-        self.batch_size = batch_size
+        
+        # Auto-detect device (CUDA > MPS > CPU)
+        if device is None:
+            if torch.cuda.is_available():
+                self.device = "cuda"
+            elif torch.backends.mps.is_available():
+                self.device = "mps"
+            else:
+                self.device = "cpu"
+        else:
+            self.device = device
+        
+        # Auto-optimize batch size and precision based on hardware
+        if batch_size is None:
+            if self.device == "cuda":
+                self.batch_size = 512  # NVIDIA GPU: large batches
+                self.use_fp16 = True
+                self.max_length = 256  # OPTIMIZED: reduced from 512
+            elif self.device == "mps":
+                self.batch_size = 256  # Apple Metal: medium batches (better stability)
+                self.use_fp16 = True   # MPS supports FP16 in newer versions
+                self.max_length = 256  # OPTIMIZED: reduced from 512
+            else:
+                self.batch_size = 128  # CPU: smaller batches
+                self.use_fp16 = False
+                self.max_length = 512
+        else:
+            self.batch_size = batch_size
+            self.use_fp16 = self.device in ["cuda", "mps"]
+            self.max_length = 256 if self.use_fp16 else 512
+        
         self.model = None
         self.tokenizer = None
         self._loaded = False
@@ -159,18 +203,35 @@ class EmbeddingModel:
             from transformers import AutoModel, AutoTokenizer
             
             print(f"🧠 Loading embedding model: {self.model_name}")
+            print(f"📊 Device: {self.device.upper()} | Batch size: {self.batch_size} | Max tokens: {self.max_length}")
+            print(f"💾 FP16 Precision: {'✅ Enabled' if self.use_fp16 else '⚠️ Disabled'}")
             start = time.time()
             
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
             self.model = AutoModel.from_pretrained(self.model_name)
             
-            # Optimize for GPU
+            # Optimize for device with FP16 if supported
             if self.device == "cuda":
-                self.model = self.model.half().to(self.device)  # FP16 for speed
-                print("✅ Model loaded with FP16 precision on GPU")
+                self.model = self.model.to(self.device)
+                if self.use_fp16:
+                    self.model = self.model.half()
+                    print("✅ Model loaded with FP16 precision on CUDA GPU (2x faster)")
+                else:
+                    print("✅ Model loaded with FP32 precision on CUDA GPU")
+            elif self.device == "mps":
+                self.model = self.model.to(self.device)
+                if self.use_fp16:
+                    try:
+                        self.model = self.model.half()
+                        print("✅ Model loaded with FP16 precision on Apple Metal (MPS)")
+                    except:
+                        self.use_fp16 = False
+                        print("⚠️ FP16 not fully supported on MPS, using FP32")
+                else:
+                    print("✅ Model loaded on Apple Metal (MPS)")
             else:
                 self.model = self.model.to(self.device)
-                print("✅ Model loaded on CPU")
+                print(f"✅ Model loaded on CPU (slower)")
             
             self.model.eval()
             self._loaded = True
@@ -188,7 +249,7 @@ class EmbeddingModel:
     
     @torch.no_grad()
     def embed_batch(self, texts: List[str]) -> np.ndarray:
-        """Embed a batch of texts efficiently"""
+        """Embed a batch of texts efficiently with FP16 and optimized batch size"""
         self._lazy_load()
         
         if self.model is None:
@@ -201,27 +262,38 @@ class EmbeddingModel:
         for i in range(0, len(texts), self.batch_size):
             batch_texts = texts[i:i + self.batch_size]
             
-            # Tokenize
+            # Tokenize with OPTIMIZED max_length
             encoded = self.tokenizer(
                 batch_texts,
                 padding=True,
                 truncation=True,
-                max_length=512,
+                max_length=self.max_length,  # OPTIMIZED: reduced from 512 to 256
                 return_tensors="pt"
             )
             
             # Move to device
-            if self.device == "cuda":
-                encoded = {k: v.to(self.device) for k, v in encoded.items()}
+            encoded = {k: v.to(self.device) for k, v in encoded.items()}
             
-            # Get embeddings
-            outputs = self.model(**encoded)
+            # Get embeddings with autocast for mixed precision
+            if self.use_fp16:
+                if self.device == "cuda":
+                    with torch.cuda.amp.autocast():
+                        outputs = self.model(**encoded)
+                elif self.device == "mps":
+                    # MPS has better autocast in newer PyTorch
+                    with torch.autocast(device_type="mps"):
+                        outputs = self.model(**encoded)
+                else:
+                    outputs = self.model(**encoded)
+            else:
+                outputs = self.model(**encoded)
+            
             embeddings = self._mean_pooling(outputs, encoded["attention_mask"])
             
             # Normalize
             embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
             
-            all_embeddings.append(embeddings.cpu().numpy().astype(np.float32))
+            all_embeddings.append(embeddings.float().cpu().numpy().astype(np.float32))
         
         return np.vstack(all_embeddings)
     
@@ -350,14 +422,15 @@ class LucioPipeline:
     
     def __init__(self, use_gpu: bool = True):
         self.gpu_manager = GPUResourceManager()
-        self.use_gpu = use_gpu and self.gpu_manager.is_cuda
+        self.use_gpu = use_gpu and self.gpu_manager.is_gpu
+        self.device = self.gpu_manager.device if self.use_gpu else "cpu"
         
         # Initialize components (lazy loaded)
-        self.ocr = OCRProcessor(device="cuda" if self.use_gpu else "cpu")
+        self.ocr = OCRProcessor(device=self.device)
         
         batch_size = self.gpu_manager.optimize_batch_size() if self.use_gpu else 32
         self.embedder = EmbeddingModel(
-            device="cuda" if self.use_gpu else "cpu",
+            device=self.device,
             batch_size=batch_size
         )
         
