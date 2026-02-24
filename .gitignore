@@ -24,6 +24,7 @@ wheels/
 # architure file remove
 DOCUMENTATION.md
 ARCHITECTURE_AND_TECH_FLOW.md
+OPTIMIZATION_TEST_RESULTS.md
 
 # Virtual environments
 venv/
