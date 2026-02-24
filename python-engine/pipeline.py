@@ -498,9 +498,10 @@ class LucioPipeline:
         print(f"🧠 Embedding {len(chunks)} chunks...")
         start = time.time()
         
-        # Filter out empty chunks
-        valid_chunks = [c for c in chunks if c.text.strip()]
+        # Filter out empty/short chunks to improve retrieval quality
+        valid_chunks = [c for c in chunks if len(c.text.strip()) >= 100]
         texts = [c.text for c in valid_chunks]
+        print(f"📊 Filtered to {len(valid_chunks)} high-quality chunks (from {len(chunks)} total)")
         
         if not texts:
             print("⚠️ No valid text to embed")

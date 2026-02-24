@@ -40,8 +40,8 @@ class QueryResult:
 class GroqSynthesizer:
     """
     Handles parallel synthesis using Groq API with:
+    - Query expansion for better retrieval
     - Exponential backoff retry
-    - 5-second timeout
     - Parallel execution via asyncio.gather()
     """
     
@@ -50,7 +50,7 @@ class GroqSynthesizer:
         api_key: Optional[str] = None,
         model: str = "llama-3.3-70b-versatile",  # Updated model (llama3-70b-8192 was decommissioned)
         max_retries: int = 3,
-        base_timeout: float = 5.0,
+        base_timeout: float = 2.0,
     ):
         self.api_key = api_key or os.environ.get("GROQ_API_KEY")
         if not self.api_key:
@@ -76,9 +76,11 @@ class GroqSynthesizer:
             await asyncio.sleep(0.1)
             return f"Mock answer for: {question}", 0
         
-        system_prompt = """You are a helpful assistant that answers questions based on the provided context.
-Be concise and accurate. If the context doesn't contain enough information, say so.
-Always cite which document(s) your answer is based on."""
+        system_prompt = """You are a expert legal and financial analyst assistant. Answer questions based ONLY on the provided context.
+If the context contains relevant information, provide a detailed answer with specific citations.
+If the context does NOT contain relevant information, explicitly state: 'The provided context does not contain information about [topic].'
+Always cite document IDs and page numbers for answers.
+Be thorough when information is available, concise quotes when relevant."""
         
         user_prompt = f"""Context:
 {context}
@@ -102,7 +104,7 @@ Answer based on the context above:"""
                             {"role": "user", "content": user_prompt},
                         ],
                         temperature=0.3,
-                        max_tokens=500,
+                        max_tokens=400,
                     ),
                     timeout=timeout,
                 )
@@ -140,7 +142,9 @@ Answer based on the context above:"""
         context_parts = []
         sources = []
         
-        for chunk, score in relevant_chunks[:5]:  # Top 5 chunks
+        # Filter chunks with substantial text and take top 8
+        valid_chunks = [(c, s) for c, s in relevant_chunks if len(c.text.strip()) > 50]
+        for chunk, score in valid_chunks[:8]:  # Top 8 chunks with content
             context_parts.append(f"[{chunk.doc_id}, Page {chunk.page_num}]: {chunk.text}")
             sources.append({
                 "doc_id": chunk.doc_id,
@@ -345,7 +349,7 @@ class LucioServer:
         
         # Batch search for all questions
         start = time.time()
-        search_results = self.pipeline.batch_search(questions, k=k)
+        search_results = self.pipeline.batch_search(questions, k=max(k, 20))
         self.stats["search_time"] = time.time() - start
         
         # Parallel synthesis
